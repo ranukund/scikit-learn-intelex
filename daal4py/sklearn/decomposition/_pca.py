@@ -38,8 +38,17 @@ if sklearn_check_version("1.3"):
 if sklearn_check_version("1.1"):
     from sklearn.utils import check_scalar
 
-from sklearn.decomposition._pca import PCA as PCA_original
-from sklearn.decomposition._pca import _infer_dimension
+if sklearn_check_version("0.22"):
+    from sklearn.decomposition._pca import PCA as PCA_original
+else:
+    from sklearn.decomposition.pca import PCA as PCA_original
+
+if sklearn_check_version("0.23"):
+    from sklearn.decomposition._pca import _infer_dimension
+elif sklearn_check_version("0.22"):
+    from sklearn.decomposition._pca import _infer_dimension_
+else:
+    from sklearn.decomposition.pca import _infer_dimension_
 
 
 @control_n_jobs(decorated_methods=["fit", "transform"])
@@ -150,7 +159,12 @@ class PCA(PCA_original):
         explained_variance_ratio_ = explained_variance_ / tot_var
 
         if n_components == "mle":
-            n_components = _infer_dimension(explained_variance_, n_samples)
+            if sklearn_check_version("0.23"):
+                n_components = _infer_dimension(explained_variance_, n_samples)
+            else:
+                n_components = _infer_dimension_(
+                    explained_variance_, n_samples, n_features
+                )
         elif 0 < n_components < 1.0:
             ratio_cumsum = stable_cumsum(explained_variance_ratio_)
             n_components = np.searchsorted(ratio_cumsum, n_components, side="right") + 1
@@ -186,7 +200,12 @@ class PCA(PCA_original):
         S = self.singular_values_
 
         if n_components == "mle":
-            n_components = _infer_dimension(self.explained_variance_, n_samples)
+            if sklearn_check_version("0.23"):
+                n_components = _infer_dimension(self.explained_variance_, n_samples)
+            else:
+                n_components = _infer_dimension_(
+                    self.explained_variance_, n_samples, n_features
+                )
         elif 0 < n_components < 1.0:
             ratio_cumsum = stable_cumsum(self.explained_variance_ratio_)
             n_components = np.searchsorted(ratio_cumsum, n_components, side="right") + 1
@@ -238,9 +257,15 @@ class PCA(PCA_original):
                     "PCA does not support sparse input. See "
                     "TruncatedSVD for a possible alternative."
                 )
-            X = self._validate_data(
-                X, dtype=[np.float64, np.float32], ensure_2d=True, copy=False
-            )
+
+            if sklearn_check_version("0.23"):
+                X = self._validate_data(
+                    X, dtype=[np.float64, np.float32], ensure_2d=True, copy=False
+                )
+            else:
+                X = check_array(
+                    X, dtype=[np.float64, np.float32], ensure_2d=True, copy=False
+                )
 
         if self.n_components is None:
             if self.svd_solver != "arpack":
@@ -293,8 +318,10 @@ class PCA(PCA_original):
         if not shape_good_for_daal or self._fit_svd_solver != "full":
             if sklearn_check_version("1.4"):
                 X = self._validate_data(X, copy=self.copy, accept_sparse=("csr", "csc"))
-            else:
+            elif sklearn_check_version("0.23"):
                 X = self._validate_data(X, copy=self.copy)
+            else:
+                X = check_array(X, copy=self.copy)
 
         _patching_status = PatchingConditionsChain("sklearn.decomposition.PCA.fit")
         _dal_ready = _patching_status.and_conditions(
@@ -332,7 +359,10 @@ class PCA(PCA_original):
         return result
 
     def _transform_daal4py(self, X, whiten=False, scale_eigenvalues=True, check_X=True):
-        check_is_fitted(self)
+        if sklearn_check_version("0.22"):
+            check_is_fitted(self)
+        else:
+            check_is_fitted(self, ["mean_", "components_"], all_or_any=all)
 
         if sklearn_check_version("1.0"):
             self._check_feature_names(X, reset=False)

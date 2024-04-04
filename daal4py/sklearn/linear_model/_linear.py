@@ -22,10 +22,15 @@ from sklearn.utils import check_array
 from .._device_offload import support_usm_ndarray
 from .._utils import sklearn_check_version
 from ..utils.base import _daal_validate_data
-from ..utils.validation import _daal_check_array
+from ..utils.validation import _daal_check_array, _daal_check_X_y
 
 if sklearn_check_version("1.0") and not sklearn_check_version("1.2"):
     from sklearn.linear_model._base import _deprecate_normalize
+
+try:
+    from sklearn.utils._joblib import Parallel, delayed
+except ImportError:
+    from sklearn.externals.joblib import Parallel, delayed
 
 import logging
 
@@ -34,6 +39,7 @@ import daal4py
 from .._n_jobs_support import control_n_jobs
 from .._utils import (
     PatchingConditionsChain,
+    get_dtype,
     get_patch_message,
     getFPType,
     is_DataFrame,
@@ -82,12 +88,13 @@ def _daal4py_predict(self, X):
     X = make2d(X)
     _fptype = getFPType(self.coef_)
     lr_pred = daal4py.linear_regression_prediction(fptype=_fptype, method="defaultDense")
-    if X.shape[1] != self.n_features_in_:
-        raise ValueError(
-            f"X has {X.shape[1]} features, "
-            f"but LinearRegression is expecting "
-            f"{self.n_features_in_} features as input"
-        )
+    if sklearn_check_version("0.23"):
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"X has {X.shape[1]} features, "
+                f"but LinearRegression is expecting "
+                f"{self.n_features_in_} features as input"
+            )
     try:
         lr_res = lr_pred.compute(X, self.daal_model_)
     except RuntimeError:
@@ -102,6 +109,28 @@ def _daal4py_predict(self, X):
 
 
 def _fit_linear(self, X, y, sample_weight=None):
+    """
+    Fit linear model.
+
+    Parameters
+    ----------
+    X : numpy array or sparse matrix of shape [n_samples,n_features]
+        Training data
+
+    y : numpy array of shape [n_samples, n_targets]
+        Target values
+
+    sample_weight : numpy array of shape [n_samples]
+        Individual weights for each sample
+
+        .. versionadded:: 0.17
+           parameter *sample_weight* support to LinearRegression.
+
+    Returns
+    -------
+    self : returns an instance of self.
+    """
+
     params = {
         "X": X,
         "y": y,
@@ -109,11 +138,16 @@ def _fit_linear(self, X, y, sample_weight=None):
         "y_numeric": True,
         "multi_output": True,
     }
-    X, y = _daal_validate_data(
-        self,
-        dtype=[np.float64, np.float32],
-        **params,
-    )
+    if sklearn_check_version("0.23"):
+        X, y = _daal_validate_data(
+            self,
+            dtype=[np.float64, np.float32],
+            **params,
+        )
+    else:
+        X, y = _daal_check_X_y(**params)
+
+    dtype = get_dtype(X)
 
     self.fit_shape_good_for_daal_ = bool(
         X.shape[0] > X.shape[1] + int(self.fit_intercept)
@@ -134,6 +168,17 @@ def _fit_linear(self, X, y, sample_weight=None):
         ]
     )
 
+    if sklearn_check_version("0.22") and not sklearn_check_version("0.23"):
+        _patching_status.and_conditions(
+            [
+                (
+                    dtype in [np.float32, np.float64],
+                    f"'{X.dtype}' X data type is not supported. "
+                    "Only np.float32 and np.float64 are supported.",
+                )
+            ]
+        )
+
     _dal_ready = _patching_status.get_status()
     _patching_status.write_log()
     if _dal_ready:
@@ -153,10 +198,23 @@ def _fit_linear(self, X, y, sample_weight=None):
 
 
 def _predict_linear(self, X):
+    """Predict using the linear model
+
+    Parameters
+    ----------
+    X : {array-like, sparse matrix}, shape = (n_samples, n_features)
+        Samples.
+
+    Returns
+    -------
+    C : array, shape = (n_samples,)
+        Returns predicted values.
+    """
     if sklearn_check_version("1.0"):
         self._check_feature_names(X, reset=False)
     is_df = is_DataFrame(X)
-    X = check_array(X, accept_sparse="csr", dtype=[np.float64, np.float32])
+    if sklearn_check_version("0.23"):
+        X = check_array(X, accept_sparse="csr", dtype=[np.float64, np.float32])
     X = np.asarray(X) if not sp.issparse(X) and not is_df else X
     good_shape_for_daal = (
         True if X.ndim <= 1 else True if X.shape[0] > X.shape[1] else False
@@ -220,7 +278,7 @@ class LinearRegression(LinearRegression_original):
                 positive=positive,
             )
 
-    else:
+    elif sklearn_check_version("0.24"):
 
         def __init__(
             self,
@@ -238,8 +296,45 @@ class LinearRegression(LinearRegression_original):
                 positive=positive,
             )
 
+    else:
+
+        def __init__(
+            self,
+            fit_intercept=True,
+            normalize=False,
+            copy_X=True,
+            n_jobs=None,
+        ):
+            super(LinearRegression, self).__init__(
+                fit_intercept=fit_intercept,
+                normalize=normalize,
+                copy_X=copy_X,
+                n_jobs=n_jobs,
+            )
+
     @support_usm_ndarray()
     def fit(self, X, y, sample_weight=None):
+        """
+        Fit linear model.
+
+        Parameters
+        ----------
+        X : {array-like, sparse matrix} of shape (n_samples, n_features)
+            Training data.
+
+        y : array-like of shape (n_samples,) or (n_samples, n_targets)
+            Target values. Will be cast to X's dtype if necessary.
+
+        sample_weight : array-like of shape (n_samples,), default=None
+            Individual weights for each sample.
+            .. versionadded:: 0.17
+               parameter *sample_weight* support to LinearRegression.
+
+        Returns
+        -------
+        self : object
+            Fitted Estimator.
+        """
         if sklearn_check_version("1.0") and not sklearn_check_version("1.2"):
             self._normalize = _deprecate_normalize(
                 self.normalize,
@@ -251,25 +346,38 @@ class LinearRegression(LinearRegression_original):
         if sklearn_check_version("1.2"):
             self._validate_params()
 
-        _patching_status = PatchingConditionsChain(
-            "sklearn.linear_model.LinearRegression.fit"
-        )
-        _dal_ready = _patching_status.and_conditions(
-            [
-                (
-                    self.positive is False,
-                    "Forced positive coefficients are not supported.",
+        if sklearn_check_version("0.24"):
+            _patching_status = PatchingConditionsChain(
+                "sklearn.linear_model.LinearRegression.fit"
+            )
+            _dal_ready = _patching_status.and_conditions(
+                [
+                    (
+                        self.positive is False,
+                        "Forced positive coefficients are not supported.",
+                    )
+                ]
+            )
+            if not _dal_ready:
+                _patching_status.write_log()
+                return super(LinearRegression, self).fit(
+                    X, y=y, sample_weight=sample_weight
                 )
-            ]
-        )
-        if not _dal_ready:
-            _patching_status.write_log()
-            return super(LinearRegression, self).fit(X, y=y, sample_weight=sample_weight)
         return _fit_linear(self, X, y, sample_weight=sample_weight)
 
     @support_usm_ndarray()
     def predict(self, X):
-        return _predict_linear(self, X)
+        """
+        Predict using the linear model.
 
-    fit.__doc__ = LinearRegression_original.fit.__doc__
-    predict.__doc__ = LinearRegression_original.predict.__doc__
+        Parameters
+        ----------
+        X : array-like or sparse matrix, shape (n_samples, n_features)
+            Samples.
+
+        Returns
+        -------
+        C : array, shape (n_samples,)
+            Returns predicted values.
+        """
+        return _predict_linear(self, X)

@@ -650,7 +650,8 @@ class RandomForestClassifier(RandomForestClassifier_original, RandomForestBase):
             return super().predict_proba(X)
         X = check_array(X, dtype=[np.float64, np.float32])
         check_is_fitted(self)
-        self._check_n_features(X, reset=False)
+        if sklearn_check_version("0.23"):
+            self._check_n_features(X, reset=False)
         return self._daal_predict_proba(X)
 
     if sklearn_check_version("1.0"):
@@ -669,7 +670,10 @@ class RandomForestClassifier(RandomForestClassifier_original, RandomForestBase):
             if self._cached_estimators_:
                 return self._cached_estimators_
 
-        check_is_fitted(self)
+        if sklearn_check_version("0.22"):
+            check_is_fitted(self)
+        else:
+            check_is_fitted(self, "daal_model_")
         classes_ = self.classes_[0]
         n_classes_ = self.n_classes_[0]
         # convert model to estimators
@@ -1239,7 +1243,10 @@ class RandomForestRegressor(RandomForestRegressor_original, RandomForestBase):
         if hasattr(self, "_cached_estimators_"):
             if self._cached_estimators_:
                 return self._cached_estimators_
-        check_is_fitted(self)
+        if sklearn_check_version("0.22"):
+            check_is_fitted(self)
+        else:
+            check_is_fitted(self, "daal_model_")
         # convert model to estimators
         params = {
             "criterion": self.criterion,
